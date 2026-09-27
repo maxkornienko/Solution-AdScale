@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Сгенерированные из .puml изображения.
+# PNG внутри Task*/diagrams/ – исключение: их генерирует и коммитит CI,
+# чтобы диаграммы были видны прямо на GitHub.
+*.png
+*.svg
+*.eps
+*.pdf
+!Task*/diagrams/*.png
+out/
+
+# Скачанный локально рендерер (не место в репозитории)
+plantuml.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Временные файлы редакторов
+*~
+*.swp
+*.crswap

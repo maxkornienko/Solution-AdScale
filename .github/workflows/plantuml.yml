@@ -1,0 +1,62 @@
+name: PlantUML Diagrams
+
+# Рендерит .puml из Task1–3/diagrams в .png рядом с исходником и коммитит картинки
+# обратно в ту же ветку. Работает в любой ветке, чтобы картинки были видны и в PR.
+on:
+  push:
+    paths:
+      - 'Task*/diagrams/**.puml'
+      - 'C4PlantUML/**'
+      - '.github/workflows/plantuml.yml'
+  workflow_dispatch:
+
+# Для git push нужен доступ на запись.
+permissions:
+  contents: write
+
+# Два пуша подряд в одну ветку: старый запуск отменяется.
+concurrency:
+  group: plantuml-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLANTUML_VERSION: '1.2026.8'
+
+jobs:
+  generate-diagrams:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # Jar фиксированной версии – сборка воспроизводима.
+      - name: Download PlantUML
+        run: |
+          curl -sSL --fail -o plantuml.jar \
+            "https://github.com/plantuml/plantuml/releases/download/v${PLANTUML_VERSION}/plantuml-${PLANTUML_VERSION}.jar"
+
+      # Локальная библиотека C4PlantUML/ подключается из самих диаграмм (!RELATIVE_INCLUDE).
+      # -failfast2 роняет сборку при синтаксической ошибке в любой диаграмме.
+      - name: Generate diagrams
+        run: |
+          find Task1 Task2 Task3 -path '*/diagrams/*.puml' -print0 \
+            | xargs -0 java -jar plantuml.jar -failfast2 -tpng
+
+      - name: Commit diagrams
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Task1/diagrams Task2/diagrams Task3/diagrams
+          if git diff --cached --quiet; then
+            echo "Диаграммы не изменились – коммитить нечего"
+          else
+            git commit -m "chore: перегенерация диаграмм PlantUML"
+            git push
+          fi
