@@ -1,0 +1,34 @@
+@startuml
+' Локальная библиотека C4 – без обращения в интернет
+!RELATIVE_INCLUDE = "."
+!include ../../C4PlantUML/C4_Component.puml
+
+title C4 Component – Bidding Service
+
+Container(gw, "API Gateway", "Envoy", "HTTPS / OpenRTB → gRPC, аутентификация, rate limiting, Circuit Breaker")
+
+Container_Boundary(bidding, "Bidding Service (C++, Go, stateless)") {
+    Component(api, "Bid API", "gRPC", "Одна операция: принять bid request, вернуть bid response или no-bid")
+    Component(targeting, "Отбор кандидатов", "бывший Ad Server", "Определяет пользователя, подбирает кампании по правилам таргетинга, проверяет статус кампании")
+    Component(auction, "Аукцион", "бывший Auction Engine", "Бизнес-правила, расчёт ставки, выбор победителя")
+    Component(campClient, "Клиент данных кампаний", "Redis + gRPC", "Читает Redis; при промахе вызывает Campaign Service через Circuit Breaker; при разомкнутой цепи – no-bid")
+    Component(delClient, "Клиент Delivery", "gRPC", "Запрашивает разметку победителя; без повторов, при недоступности – no-bid")
+}
+
+ContainerDb(redis, "Redis: ставки и кампании", "Redis", "Кеш на пути bid request")
+Container(campaign, "Campaign Service", "gRPC", "Кампании, ставки, оплаченные показы")
+Container(delivery, "Delivery Service", "Node.js", "HTML/JS-разметка баннера")
+
+Rel(gw, api, "Bid request / response", "gRPC")
+Rel(api, targeting, "Bid request")
+Rel(targeting, campClient, "Данные кампаний")
+Rel(targeting, auction, "Кандидаты")
+Rel(auction, delClient, "Победитель: id кампании, id креатива")
+Rel(api, auction, "Результат: ставка или no-bid")
+
+Rel(campClient, redis, "Ставки, кампании, правила таргетинга", "Redis")
+Rel(campClient, campaign, "При промахе кеша", "gRPC")
+Rel(delClient, delivery, "Разметка баннера", "gRPC")
+
+SHOW_LEGEND()
+@enduml

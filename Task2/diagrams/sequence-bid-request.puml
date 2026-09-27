@@ -1,0 +1,63 @@
+@startuml
+title Sequence – обработка bid request
+
+autonumber
+skinparam responseMessageBelowArrow true
+
+participant "DSP-партнёр" as dsp
+participant "API Gateway\n(Envoy)" as gw
+participant "Bidding Service" as bid
+database "Redis:\nставки и кампании" as redisC
+participant "Campaign Service" as camp
+database "Campaign DB\n(реплика)" as campDb
+participant "Delivery Service" as del
+database "Redis:\nразметка" as redisM
+database "Delivery DB\n(реплика)" as delDb
+
+dsp -> gw : bid request\nHTTPS / OpenRTB (JSON)
+gw -> gw : аутентификация партнёра
+gw -> bid : bid request\ngRPC (grpc_json_transcoder)
+
+bid -> redisC : ставки, кампании,\nправила таргетинга
+alt попадание в кеш
+    redisC --> bid : данные кампаний
+else промах кеша или Redis недоступен
+    alt Circuit Breaker замкнут
+        bid -> camp : данные кампаний (gRPC)
+        camp -> campDb : чтение реплики
+        campDb --> camp : данные
+        camp --> bid : данные кампаний
+    else Circuit Breaker разомкнут или Campaign недоступен
+        bid --> gw : no-bid
+        gw --> dsp : HTTP 204 No Content
+    end
+end
+
+bid -> bid : определить пользователя,\nподобрать кандидатов,\nпроверить статус кампании,\nрассчитать ставку, выбрать победителя
+
+alt нет подходящих кампаний
+    bid --> gw : no-bid
+    gw --> dsp : HTTP 204 No Content
+else есть победитель
+    bid -> del : id кампании, id креатива (gRPC)
+    del -> redisM : разметка баннера
+    alt промах кеша
+        del -> delDb : чтение реплики
+        delDb --> del : макет
+    end
+    alt Delivery ответил
+        del --> bid : HTML/JS-разметка
+        bid --> gw : bid response
+        gw --> dsp : bid response\nHTTPS / OpenRTB (JSON)
+    else Delivery недоступен (без повторов)
+        bid --> gw : no-bid
+        gw --> dsp : HTTP 204 No Content
+    end
+end
+
+note over dsp, gw
+  Весь ответ – в пределах tmax:
+  P95 ≤ 100 ms, для нового партнёра ≤ 80 ms.
+  Bid requests не повторяются.
+end note
+@enduml

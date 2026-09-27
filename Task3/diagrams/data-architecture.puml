@@ -1,0 +1,65 @@
+@startuml
+' Локальная библиотека C4 – без обращения в интернет
+!RELATIVE_INCLUDE = "."
+!include ../../C4PlantUML/C4_Container.puml
+
+title Архитектура данных – AdScale (TO-BE)
+
+System_Boundary(adscale, "AdScale") {
+
+    ' ---------- Сервисы ----------
+    Container(bidding, "Bidding Service", "C++, Go", "Stateless")
+    Container(campaign, "Campaign Service", "gRPC", "Кампании, ставки, статус, остаток оплаченных показов")
+    Container(delivery, "Delivery Service", "Node.js", "Разметка баннеров, показы и клики")
+    Container(stats, "Statistics + Analytics", "Python, CQRS", "Statistics пишет события, Analytics строит отчёты")
+    Container(financial, "Financial Service", "Go", "Списание пакетом раз в несколько минут")
+    Container(warmup, "Джоба прогрева кеша", "Kubernetes Job", "Частями загружает активные кампании, ставки и разметку")
+
+    ' ---------- Кеши ----------
+    ContainerDb(redisC, "Redis: ставки и кампании", "Redis", "TTL: статус – 5 мин, ставки и таргетинг – 24 ч, с джиттером. Инвалидация по событию")
+    ContainerDb(redisM, "Redis: разметка", "Redis", "TTL 24 ч, с джиттером")
+
+    ' ---------- Хранилища ----------
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL: основная + 2 асинхронные реплики", "RPO 5 мин, RTO минуты")
+    ContainerDb(deliveryDb, "Delivery DB", "PostgreSQL: основная + асинхронная реплика", "RPO 5 мин, RTO минуты")
+    ContainerDb(statsDb, "Statistics DB", "PostgreSQL: основная + асинхронная реплика", "Шардирование: хеш(event_id). RPO 0, RTO минуты")
+    ContainerDb(analyticsDb, "Analytics DB", "ClickHouse", "OLAP. RPO 0 за счёт Kafka, RTO часы")
+    ContainerDb(financialDb, "Financial DB", "PostgreSQL: основная + синхронная реплика", "RPO 0, RTO 1 час")
+
+    ' ---------- События ----------
+    ContainerQueue(kafka, "Kafka", "топики impressions, clicks", "JSON, ключ – event_id, хранение 7 дней")
+}
+
+System_Ext(backup, "Хранилище бэкапов", "GFS: ежедневно 30 дней, еженедельно 12 недель, ежемесячно 12 месяцев (Financial – 5 лет); непрерывный WAL")
+
+' ---------- Путь ставки ----------
+Rel(bidding, redisC, "Статус, ставки, таргетинг", "Redis")
+Rel(bidding, campaign, "При промахе кеша, через Circuit Breaker", "gRPC")
+Rel(campaign, campaignDb, "Запись в основную, чтение из реплик", "SQL")
+Rel(campaign, redisC, "Удаляет запись при изменении и при исчерпании показов", "Redis")
+
+' ---------- Разметка и события ----------
+Rel(delivery, redisM, "Разметка", "Redis")
+Rel(delivery, deliveryDb, "Чтение реплики", "SQL")
+Rel(delivery, campaign, "Уменьшить остаток после показа", "gRPC")
+Rel(delivery, kafka, "Показы и клики", "async")
+
+Rel(kafka, stats, "Группа statistics", "async")
+Rel(stats, statsDb, "Запись событий, проверка дублей по event_id", "SQL")
+Rel(kafka, analyticsDb, "Группа analytics", "Kafka engine")
+Rel(stats, analyticsDb, "Аналитические запросы", "SQL")
+
+' ---------- Финансы ----------
+Rel(financial, stats, "Суммы к списанию из Statistics", "gRPC")
+Rel(financial, financialDb, "Транзакции и балансы", "SQL")
+
+' ---------- Прогрев и бэкапы ----------
+Rel(warmup, redisC, "Прогрев", "Redis")
+Rel(warmup, redisM, "Прогрев", "Redis")
+Rel(campaignDb, backup, "Бэкапы и WAL")
+Rel(deliveryDb, backup, "Бэкапы и WAL")
+Rel(statsDb, backup, "Бэкапы и WAL")
+Rel(financialDb, backup, "Бэкапы и WAL")
+
+SHOW_LEGEND()
+@enduml

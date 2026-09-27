@@ -1,0 +1,46 @@
+@startuml
+title Sequence – регистрация показа или клика
+
+autonumber
+skinparam responseMessageBelowArrow true
+
+actor "Пользователь" as user
+participant "API Gateway\n(Envoy)" as gw
+participant "Delivery Service" as del
+participant "Campaign Service" as camp
+database "Redis:\nставки и кампании" as redisC
+database "Campaign DB" as campDb
+queue "Kafka" as kafka
+participant "Statistics + Analytics" as stats
+database "Statistics DB" as statsDb
+
+user -> gw : показ или клик (HTTPS)
+gw -> gw : rate limiting\n(защита от DDoS)
+gw -> gw : создать идентификатор запроса
+gw -> del : событие + идентификатор в заголовке (gRPC)
+
+alt ответ не пришёл
+    gw -> del : повтор с экспоненциальным backoff и джиттером\nс тем же идентификатором
+end
+
+alt новый идентификатор
+    del -> camp : для показа: уменьшить оплаченное\nколичество показов (gRPC)
+    camp -> campDb : уменьшить остаток
+    opt остаток дошёл до нуля
+        camp -> campDb : статус «оплаченные показы исчерпаны»
+        camp -> redisC : удалить запись кампании
+    end
+    del -> kafka : опубликовать событие
+    del --> gw : OK
+else повтор
+    del --> gw : OK, повторно не обрабатываем
+end
+gw --> user : ответ
+
+kafka -> stats : событие (async)
+alt новое событие
+    stats -> statsDb : запись в основную БД
+else повторно прочитанное
+    stats -> stats : пропустить
+end
+@enduml
