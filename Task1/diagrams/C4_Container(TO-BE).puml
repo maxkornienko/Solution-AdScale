@@ -1,0 +1,86 @@
+@startuml
+' Локальная библиотека C4 – без обращения в интернет
+!RELATIVE_INCLUDE = "."
+!include ../../C4PlantUML/C4_Container.puml
+
+title C4 Container Diagram – AdScale (TO-BE, через год)
+
+' ====================== Акторы и внешние системы ======================
+Person(advertiser, "Рекламодатель", "Управляет кампаниями, бюджетами и креативами")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Просматривает рекламу, кликает по баннерам")
+System_Ext(dspPartner, "DSP-партнёры", "Текущие и новый. Отправляют bid requests, получают bid responses по OpenRTB")
+System_Ext(paymentGateway, "Платёжный шлюз", "Оплата при нехватке баланса")
+
+System_Boundary(adscale, "AdScale") {
+
+    Container(apiGateway, "API Gateway", "Envoy, HTTPS → gRPC", "Единая точка входа: маршрутизация и преобразование протокола, аутентификация, rate limiting, Retry и Circuit Breaker, прослеживаемость")
+
+    ' ---------- Путь bid request ----------
+    Container(bidding, "Bidding Service", "C++, Go", "Бывшие Ad Server и Auction Engine: принимает bid request, определяет пользователя, подбирает кандидатов, считает ставку, выбирает победителя. Stateless")
+    Container(deliveryService, "Delivery Service", "Node.js", "Формирует HTML/JS-разметку баннера, регистрирует показы и клики")
+
+    ContainerDb(redisCampaign, "Redis: ставки и кампании", "Redis", "Кеш на пути bid request. Инвалидация по событию из Campaign Service")
+    ContainerDb(redisMarkup, "Redis: разметка", "Redis", "Кеш HTML/JS-разметки баннеров")
+
+    ' ---------- Кампании ----------
+    Container(campaignService, "Campaign Service", "gRPC", "Ставки, кампании, оплаченное количество показов")
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL: основная + 2 реплики", "Запись – в основную, чтение при промахе кеша – из реплик")
+
+    ContainerDb(deliveryDb, "Delivery DB", "PostgreSQL: основная + реплика", "Макеты, тексты, всё для сборки разметки")
+
+    ' ---------- События и аналитика ----------
+    ContainerQueue(kafka, "Kafka", "Apache Kafka", "Показы и клики пользователей")
+    Container(statsAnalytics, "Statistics + Analytics", "Python, CQRS, один деплой", "Модуль Statistics пишет события, модуль Analytics читает отчёты")
+    ContainerDb(statsDb, "Statistics DB", "PostgreSQL: основная + асинхронная реплика", "Показы и клики")
+    ContainerDb(analyticsDb, "Analytics DB", "ClickHouse", "Аналитика по показам и кликам")
+
+    ' ---------- Финансы и кабинет ----------
+    Container(financialService, "Financial Service", "Go", "Балансы, списания, транзакции")
+    ContainerDb(financialDb, "Financial DB", "PostgreSQL: основная + синхронная реплика", "Балансы и транзакции")
+
+    Container(adCabinet, "Advertiser Dashboard", "Node.js + JavaScript", "Web UI: кампании, креативы, бюджеты, отчётность")
+}
+
+' ====================== Внешние связи ======================
+Rel(dspPartner, apiGateway, "Bid requests / responses", "HTTPS / OpenRTB")
+Rel(endUser, apiGateway, "Показы и клики", "HTTPS")
+Rel(advertiser, apiGateway, "Управляет кампаниями и бюджетами", "HTTPS")
+
+Rel(apiGateway, bidding, "Bid requests / responses", "gRPC")
+Rel(apiGateway, deliveryService, "Показы и клики", "gRPC")
+Rel(apiGateway, adCabinet, "Запросы рекламодателя", "gRPC")
+
+' ====================== Путь bid request ======================
+Rel(bidding, deliveryService, "Передаёт победителя, получает разметку", "gRPC")
+
+Rel(bidding, redisCampaign, "Ставки, кампании, правила таргетинга", "Redis")
+Rel(bidding, campaignService, "При промахе кеша", "gRPC")
+
+Rel(deliveryService, redisMarkup, "Разметка баннеров", "Redis")
+Rel(deliveryService, deliveryDb, "Читает реплику", "SQL")
+Rel(deliveryService, campaignService, "Уменьшает оплаченное количество показов", "gRPC")
+Rel(deliveryService, kafka, "Публикует показы и клики", "async")
+
+' ====================== Кампании ======================
+Rel(campaignService, campaignDb, "Запись / чтение реплик", "SQL")
+Rel(campaignService, redisCampaign, "Удаляет запись при изменении", "Redis")
+
+' ====================== События и аналитика ======================
+Rel(kafka, statsAnalytics, "Показы и клики", "async")
+Rel(statsAnalytics, statsDb, "Statistics: запись показов и кликов", "SQL")
+Rel(statsAnalytics, analyticsDb, "Analytics: аналитические запросы", "SQL")
+Rel(kafka, analyticsDb, "Показы и клики (отдельная группа потребителей)", "Kafka engine")
+
+' ====================== Кабинет ======================
+Rel(adCabinet, campaignService, "Кампании и ставки", "gRPC")
+Rel(adCabinet, deliveryService, "Макеты и тексты", "gRPC")
+Rel(adCabinet, financialService, "Баланс", "gRPC")
+Rel(adCabinet, statsAnalytics, "Отчёты", "gRPC")
+
+' ====================== Финансы ======================
+Rel(financialService, statsAnalytics, "Суммы к списанию из Statistics", "gRPC")
+Rel(financialService, financialDb, "Транзакции и балансы", "SQL")
+Rel(financialService, paymentGateway, "Оплата при нехватке баланса", "HTTPS / REST")
+
+SHOW_LEGEND()
+@enduml
